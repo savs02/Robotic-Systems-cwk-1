@@ -1,233 +1,131 @@
+#!/usr/bin/env python3
 '''
-Created on 25 Jan 2022
+Created on 27 Jan 2022
 
 @author: ucacsjj
 '''
 
-# This class stores a cleaning scenario. The scenario is used by the
-# environment and the path planner
+from common.airport_map_drawer import AirportMapDrawer
+from common.scenarios import full_scenario
+from p1.high_level_actions import HighLevelActionType
+from p1.high_level_environment import HighLevelEnvironment, PlannerType
 
 import math
-from enum import Enum
+import statistics
+import pandas as pd
 
-from grid_search.cell_grid import Cell, CellGrid
-from grid_search.search_grid import SearchGridCell
+def calculate_euclidean_distance(point1, point2):
+    return math.sqrt((point2[0] - point1[0])**2 + (point2[1] - point1[1])**2)
 
-
-# Label which shows the semantic label of the cell based on what real-world
-# object it contains. It is used to do things like work out traversability
-# costs. Note the labels here are different from the ones you find in the
-# SearchGrid for the forward search algorithm. Those are used for book-keeping.
-class MapCellType(Enum):
-    UNKNOWN = -1
-    WALL = 0
-    OPEN_SPACE = 1
-    BAGGAGE_CLAIM = 2
-    CUSTOMS_AREA = 3
-    SECRET_DOOR = 4
-    TOILET = 5
-    CHARGING_STATION = 6
-    RUBBISH_BIN = 7
-    CHAIR = 8
-    ROBOT_START_LOCATION = 9
-    ROBOT_END_STATION = 10
+def analyze_planner_performance(planner_type_name, data_dict, all_rubbish_bins):
+    total_path_cost = sum(d[0] for d in data_dict.values())
+    total_cells_visited = sum(d[1] for d in data_dict.values())
     
-# Class for the map cell.
-class MapCell(Cell):
+    bin_coords = [bin.coords() for bin in all_rubbish_bins]
+    bin_coords.insert(0, (0, 0))
+    
+    path_efficiency_ratios = []
+    for i in range(1, len(bin_coords)):
+        actual_path_cost = data_dict[i][0] 
+        straight_line_distance = calculate_euclidean_distance(bin_coords[i-1], bin_coords[i])
+        if straight_line_distance > 0:
+            path_efficiency_ratios.append(actual_path_cost / straight_line_distance)
+        else:
+            path_efficiency_ratios.append(0)
 
-    # This is used to specify if a cell type obstructs the robot or not
-    # Note that, to plan a path to a cell, we have to make that
-    # cell not an obstruction
-    _is_obstruction = {
-        MapCellType.UNKNOWN: True,
-        MapCellType.WALL: True,
-        MapCellType.OPEN_SPACE: False,
-        MapCellType.BAGGAGE_CLAIM: True,
-        MapCellType.CUSTOMS_AREA: False,
-        MapCellType.SECRET_DOOR: False,
-        MapCellType.TOILET: True,
-        MapCellType.CHARGING_STATION: False,
-        MapCellType.RUBBISH_BIN: False,
-        MapCellType.CHAIR: True,
-        MapCellType.ROBOT_START_LOCATION: False,
-        MapCellType.ROBOT_END_STATION: False
+    planning_efficiencies = [
+        d[1] / d[0] if d[0] > 0 else 0
+        for d in data_dict.values()
+    ]
+
+
+    path_cost_stddev = statistics.stdev([d[0] for d in data_dict.values()]) if len(data_dict) > 1 else 0
+    cells_visited_stddev = statistics.stdev([d[1] for d in data_dict.values()]) if len(data_dict) > 1 else 0
+
+    total_grid_cells = 2400
+    avg_coverage_percentage = (total_cells_visited / len(data_dict)) / total_grid_cells * 100
+
+    print(f"\n=== {planner_type_name} Performance Analysis ===")
+    print(f"Total Path Cost: {total_path_cost:.2f}")
+    print(f"Total Cells Visited: {total_cells_visited}")
+    print(f"Average Path Efficiency Ratio: {sum(path_efficiency_ratios)/len(path_efficiency_ratios):.2f}")
+    print(f"Average Planning Efficiency (cells / unit path): {sum(planning_efficiencies)/len(planning_efficiencies):.2f}")
+    print(f"Path Cost Std Dev: {path_cost_stddev:.2f}")
+    print(f"Cells Visited Std Dev: {cells_visited_stddev:.2f}")
+    print(f"Avg Coverage Percentage: {avg_coverage_percentage:.2f}%")
+
+    return {
+        "total_path_cost": total_path_cost,
+        "total_cells_visited": total_cells_visited,
+        "avg_path_efficiency": sum(path_efficiency_ratios)/len(path_efficiency_ratios),
+        "avg_planning_efficiency": sum(planning_efficiencies)/len(planning_efficiencies),
+        "path_cost_stddev": path_cost_stddev,
+        "cells_visited_stddev": cells_visited_stddev,
+        "avg_coverage_percentage": avg_coverage_percentage
     }
 
-    # A state is terminal or not depending upon its type 
-    _is_terminal_state = {
-        MapCellType.UNKNOWN: True,
-        MapCellType.WALL: False,
-        MapCellType.OPEN_SPACE: False,
-        MapCellType.BAGGAGE_CLAIM: False,
-        MapCellType.CUSTOMS_AREA: False,
-        MapCellType.SECRET_DOOR: False,
-        MapCellType.TOILET: False,
-        MapCellType.CHARGING_STATION: False,
-        MapCellType.RUBBISH_BIN: False,
-        MapCellType.CHAIR: False,
-        MapCellType.ROBOT_START_LOCATION: True,
-        MapCellType.ROBOT_END_STATION: True
+if __name__ == '__main__':
+    
+
+    airport_map, drawer_height = full_scenario()
+
+    # Q1f: Enable using cell-type-dependent traversability costs
+    airport_map.set_use_cell_type_traversability_costs(True)
+    
+    airport_map_drawer = AirportMapDrawer(airport_map, drawer_height)
+    airport_map_drawer.update()
+    airport_map_drawer.wait_for_key_press()
+    
+    all_rubbish_bins = airport_map.all_rubbish_bins()
+
+    planners = {
+        "DIJKSTRA": PlannerType.DIJKSTRA
     }
+    
+    results_data = {}
+    binwise_data = []
 
-    def __init__(self, coords, map_cell_type = MapCellType.OPEN_SPACE, params = None):
+
+    for planner_name, planner_type in planners.items():
+        print(f"\n--- Running simulation for {planner_name} ---")
+
+        airport_environment = HighLevelEnvironment(airport_map, planner_type)
         
-        Cell.__init__(self, coords)
 
-        # The map cell type
-        self._cell_type = map_cell_type
-        # Any parameters
-        self._params = params
+        airport_environment.show_graphics(True)
+        airport_environment.show_verbose_graphics(False)
 
-    # Return the coordinates of the cell
-    def coords(self):
-        return self._coords
-
-    # Get the cell label
-    def cell_type(self):
-        return self._cell_type
-    
-    # Set the cell type        
-    def set_cell_type(self, map_cell_type):
-        self._cell_type = map_cell_type
-
-    # Returns True if the cell type is one where the terminal action gets fired.    
-    def is_terminal(self):
-        return MapCell._is_terminal_state.get(self._cell_type)
-    
-    # Returns true if the robot cannot pass through this cell
-    def is_obstruction(self):
-        return MapCell._is_obstruction.get(self._cell_type)
-
-    # Other parameters
-    def params(self):
-        return self._params
-    
-    def set_params(self, params):
-        self._params = params
-
-# The airport map. This is an annotated grid which has extra
-# parameters depending upon the type.
-# You'll notice some areas are 'set_*' whereas others are 'add_*'.
-# The idea is that you set properties of cells, but add objects
-
-class AirportMap(CellGrid):
-    '''
-    classdocs
-    '''
-
-    def __init__(self, name, width, height):
-        CellGrid.__init__(self, name, width, height)
-
-        self._map = [[MapCell((x, y)) for y in range(self._height)] \
-                     for x in range(self._width)]
-                
-        # set lists used to simplify stuff
-        self._charging_stations = []
+        action = (HighLevelActionType.TELEPORT_ROBOT_TO_NEW_POSITION, (0, 0))
+        observation, reward, done, info = airport_environment.step(action)
+        if reward == -float('inf'):
+            print("Unable to teleport to (0, 0).")
         
-        self._rubbish_bins = []
+        data = {}
+        bin_index = 1
         
-        self._toilets = []        
-                
-        # Start without using the type-dependent traversability costs
-        self._use_cell_type_traversability_costs = True
-    
-    def resolution(self):
-        return 1
-
-    # Get the cell object stored at a particular set of coordinates
-    def cell(self, x, y):
-        return self._map[x][y]
-    
-    def is_obstruction(self, x, y):
-        return self._map[x][y].is_obstruction()
-    
-    def set_wall(self, x, y):
-        self._map[x][y].set_cell_type(MapCellType.WALL)
-        
-    def set_open_space(self, x, y):
-        self._map[x][y].set_cell_type(MapCellType.OPEN_SPACE)
+        for rubbish_bin in all_rubbish_bins:
+            action = (HighLevelActionType.DRIVE_ROBOT_TO_NEW_POSITION, rubbish_bin.coords())
+            observation, reward, done, info = airport_environment.step(action)
             
-    def set_customs_area(self, x, y):
-        self._map[x][y].set_cell_type(MapCellType.CUSTOMS_AREA)
-
-    def add_secret_door(self, x, y):#, door_cost):
-        cell = self._map[x][y]
-        cell.set_cell_type(MapCellType.SECRET_DOOR)
-        door_cost = 0
-        cell.set_params((door_cost))
-        
-    def add_robot_end_station(self, x, y, terminal_action_reward = 0):
-        cell = self._map[x][y]
-        cell.set_cell_type(MapCellType.ROBOT_END_STATION)
-        cell.set_params((terminal_action_reward))        
-
-    # Add a charging station
-    def add_toilet(self, x, y):
-        cell = self._map[x][y]
-        cell.set_cell_type(MapCellType.TOILET)
-        self._toilets.append(cell)
-        
-    def toilet(self, toilet_num):
-        return self._toilets[toilet_num]
-    
-    def all_toilets(self):
-        return self._toilets
-
-    # Add a charging station
-    def add_charging_station(self, x, y, mean, covariance):
-        cell = self._map[x][y]
-        cell.set_cell_type(MapCellType.CHARGING_STATION)
-        cell.set_params((mean, covariance))
-        self._charging_stations.append(cell)
-        
-    def charging_station(self, station_num):
-        return self._charging_stations[station_num]
-    
-    def all_charging_stations(self):
-        return self._charging_stations
-        
-    # Add a charging station
-    def add_rubbish_bin(self, x, y):
-        cell = self._map[x][y]
-        cell.set_cell_type(MapCellType.RUBBISH_BIN)
-        self._rubbish_bins.append(cell)
-        
-    def rubbish_bin(self, rubbish_bin_num):
-        return self._rubbish_bins[rubbish_bin_num]
-    
-    def all_rubbish_bins(self):
-        return self._rubbish_bins
-    
-    def set_cell_type(self, x, y, cell_type):
-        self._map[x][y].set_cell_type(cell_type)
-        
-    def set_use_cell_type_traversability_costs(self, use_cell_type_traversability_costs):
-        self._use_cell_type_traversability_costs = use_cell_type_traversability_costs
-    
-    def compute_transition_cost(self, last_coords, current_coords):
-    
-        dX = current_coords[0] - last_coords[0]
-        dY = current_coords[1] - last_coords[1]
-        L = math.sqrt(dX * dX + dY * dY)
-        
-        if self._use_cell_type_traversability_costs:
-            cell_type = self._map[current_coords[0]][current_coords[1]].cell_type()
-
-            alpha = 1
-
-            if cell_type == MapCellType.SECRET_DOOR:
-                alpha = 5
-            elif cell_type == MapCellType.CUSTOMS_AREA:
-                alpha = 100
-
-            L *= alpha
+            data[bin_index] = [info.path_travel_cost, info.number_of_cells_visited]
             
-        return L
+            screenshot_name = f"{planner_name}_bin_{bin_index:02}.pdf"
+            airport_environment.search_grid_drawer().save_screenshot(screenshot_name)
+            
+            binwise_data.append({
+                "Planner": planner_name,
+                "Bin_Number": bin_index,
+                "Path_Travel_Cost": info.path_travel_cost,
+                "Cells_Visited": info.number_of_cells_visited
+            })
+            
+            bin_index += 1
         
-    def populate_search_grid(self, search_grid):
-        grid = [[SearchGridCell((x, y), self._map[x][y].is_obstruction()) for y in range(self._height)] \
-                     for x in range(self._width)]
-        
-        search_grid._set_search_grid(grid)
+        results_data[planner_name] = analyze_planner_performance(
+            planner_name, data, all_rubbish_bins
+        )
 
-    
+    df = pd.DataFrame(binwise_data)
+    df.to_csv('binwise_data.csv', index=False)
+    print("\nBinwise data saved to 'binwise_data.csv'")
+
